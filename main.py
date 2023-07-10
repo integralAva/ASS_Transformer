@@ -1,63 +1,76 @@
-import os
 import ass
-import re
+import math
+import os
 
 
-def transform(src: ass.Document) -> ass.Document:
-    # 重置层
-    for line in src.events:
-        line.layer = 1
-    # 重置特效标签
-    line_index = 0
-    for line in src.events:
-        text = line.text
-        # 匹配特效标签
-        lable_list = re.findall(r'\{.*?}', text)
-        if len(lable_list) != 0:
-            # 删除非必要特效标签
-            index = 0
-            for lable in lable_list:
-                lable: str
-                # 掐头去尾
-                lable = lable[2:-1]
-                # 切割
-                delete_lable = list()
-                lable_set = lable.split('\\')
-                for item in lable_set:
-                    if item == '':
-                        delete_lable.append(item)
-                        continue
-                    if item[0] != 'k':
-                        # 不是k轴？真不熟，进行一个切割
-                        delete_lable.append(item)
-                for item in delete_lable:
-                    lable_set.remove(item)
-                # 重新添加首尾
-                lable_list[index] = '{\\' + '\\'.join(n for n in lable_set) + '}'
-                index += 1
-            # 重新组合写入
-            new_text = ''
-            raw_list = re.split(r'\{.*?}', text)
-            new_text += raw_list[0]
-            for count in range(1, len(raw_list)):
-                new_text += lable_list[count-1] + raw_list[count]
-            # 去除空特效标签
-            new_text = new_text.replace('{\\}', '')
-            # 写入
-            src.events[line_index].text = new_text
-        line_index += 1
-    return src
+def transform_line(events: ass.Events):
+    for index, line in enumerate(events.Line):
+        if line.TYPE != ass.EventLineType.Dialogue:
+            ass.log_warning('注释行，跳过')
+            continue
+        if line.Name == 'py_lable':
+            ass.log_warning('处理行，跳过')
+            continue
+        # 读取特效标签，记录标签
+        lable_list = list()
+        for lable in line.Text.tag:
+            # k轴标签
+            if lable.effect_name in ['k', 'ko', 'kf']:
+                lable_list.append(lable)
+                # 复制一份
+                events.repeat_line(index)
+        # 没有k轴不处理
+        if lable_list.__len__() == 0:
+            ass.log_message(f"行{index}无需处理")
+            continue
+        # 重置层
+        line.Layer = '1'
+        # 注释参考行
+        line.TYPE = ass.EventLineType.Comment
+        # 删除原k轴，平移时间，添加fad，添加alpha
+        for offset, lable in enumerate(lable_list, start=1):
+            corrent_line = events.Line[index + offset]
+            corrent_line.TYPE = ass.EventLineType.Dialogue
+            corrent_line.Layer = str(offset + 1)
+            corrent_line.Name = 'py_lable'
+            # 删除原k轴
+            rd = list()
+            for lb in corrent_line.Text.tag:
+                if lb.effect_name in ['k', 'ko', 'kf']:
+                    rd.append(lb)
+            for lb in rd:
+                corrent_line.Text.tag.remove(lb)
+            del rd
+            # 平移
+            if offset != 1:
+                last_line = events.Line[index + offset - 1]
+                # 上一行 减去 基准行 即为预偏移时间
+                delta = last_line.Start.time - line.Start.time
+                fp = round(int(lable_list[offset-2].effect_parameter)*0.01, 2)
+                mill, second = math.modf(fp)
+                mill = int(round(mill*1000))
+                second = int(second)
+                corrent_line.Start.time_offset(seconds=second, milliseconds=mill, last=delta)
+            # 添加fad
+            corrent_line.Text.insert_effect_tag('fad', 0, '(120,120)')
+            # 添加alpha
+            corrent_line.Text.insert_effect_tag('alpha', 0, 'ff')
+            corrent_line.Text.insert_effect_tag('alpha', lable.effect_region, '0')
+            if offset < lable_list.__len__():
+                corrent_line.Text.insert_effect_tag('alpha', lable_list[offset].effect_region, 'ff')
+        ass.log_message(f"行{index}处理完成")
 
 
 if __name__ == '__main__':
     print("file name")
-    path = './loVe-r.ass'
+    path = input()
     f = open(path, encoding='utf-8-sig')
-    doc = ass.parse(f)
+    doc = ass.ASSFile.parse_file(f)
     f.close()
-    os.rename(path, path+'.old')
 
-    doc = transform(doc)
+    transform_line(doc.Events)
+
+    os.rename(path, path+'.old')
     f = open(path, 'w+', encoding='utf-8-sig')
-    doc.dump_file(f)
+    doc.dump_to_file(f)
     f.close()
